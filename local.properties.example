@@ -1,0 +1,3 @@
+## Copiază acest fișier ca local.properties și completează valorile.
+sdk.dir=C\:\\path\\to\\Android\\Sdk
+GROQ_API_KEY=your_groq_api_key_here
