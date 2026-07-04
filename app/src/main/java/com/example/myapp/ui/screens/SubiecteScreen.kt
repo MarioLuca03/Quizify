@@ -66,23 +66,43 @@ fun SubiecteScreen(
     val rangeFrom by viewModel.rangeFrom.collectAsState()
     val rangeTo by viewModel.rangeTo.collectAsState()
     val offlineModelReady by viewModel.offlineModelReady.collectAsState()
+    val selectedOfflineModelId by viewModel.selectedOfflineModelId.collectAsState()
     val isDownloadingModel by viewModel.isDownloadingModel.collectAsState()
     val modelDownloadProgress by viewModel.modelDownloadProgress.collectAsState()
     val isOfflineMode by viewModel.isOfflineMode.collectAsState()
     val offlinePhase by viewModel.offlinePhase.collectAsState()
     val currentQuizItem by viewModel.currentQuizItem.collectAsState()
     val loadingStatus by viewModel.loadingStatus.collectAsState()
+    val isModelWarmingUp by viewModel.isModelWarmingUp.collectAsState()
+    val isFinalizingSession by viewModel.isFinalizingSession.collectAsState()
+    val sessionNotice by viewModel.sessionNotice.collectAsState()
+    val usedLocalAi by viewModel.usedLocalAi.collectAsState()
+    val selectedModel = OfflineLlmModelCatalog.byId(selectedOfflineModelId)
 
-    val showLoadingOverlay = isLoading &&
-        (offlinePhase == OfflineSubiectePhase.LoadingQuestion ||
-            examPack == null && offlinePhase == OfflineSubiectePhase.Idle)
+    val canFinalizeOffline = isOfflineMode && when (offlinePhase) {
+        OfflineSubiectePhase.LoadingQuestion,
+        OfflineSubiectePhase.GenerationFailed,
+        OfflineSubiectePhase.Question,
+        OfflineSubiectePhase.Feedback -> true
+        OfflineSubiectePhase.Idle -> isLoading && usedLocalAi
+        else -> false
+    }
+
+    val showLoadingOverlay = when {
+        isFinalizingSession -> true
+        offlinePhase == OfflineSubiectePhase.GenerationFailed -> true
+        isLoading &&
+            (offlinePhase == OfflineSubiectePhase.LoadingQuestion ||
+                examPack == null && offlinePhase == OfflineSubiectePhase.Idle) -> true
+        else -> false
+    }
 
     val loadingMessages = remember(isOfflineMode, offlinePhase, loadingStatus) {
         when {
             loadingStatus.isNotBlank() -> listOf(loadingStatus, "Model local…", "Aproape gata…")
             isOfflineMode -> listOf(
-                "Filtrez paginile valide…",
-                "Generez intrebarea din pagina…",
+                "Filtrez fragmentele valide…",
+                "Generez intrebarea…",
                 "Model local…"
             )
             else -> listOf(
@@ -94,7 +114,7 @@ fun SubiecteScreen(
     }
 
     LaunchedEffect(Unit) {
-        viewModel.refreshOfflineModelStatus()
+        viewModel.onSubiecteScreenVisible()
         viewModel.refreshConnectivity()
     }
 
@@ -113,6 +133,8 @@ fun SubiecteScreen(
         showFloatingBack = !showLoadingOverlay,
         onNavigateBack = {
             when {
+                offlinePhase == OfflineSubiectePhase.GenerationFailed ->
+                    viewModel.dismissGenerationFailure()
                 examPack != null || offlinePhase != OfflineSubiectePhase.Idle ->
                     viewModel.resetToPicker()
                 else -> onBack()
@@ -135,7 +157,23 @@ fun SubiecteScreen(
         ) {
             if (showLoadingOverlay) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    PdfFlowLoadingAnimation(messages = loadingMessages)
+                    if (offlinePhase == OfflineSubiectePhase.GenerationFailed && !isFinalizingSession) {
+                        OfflineGenerationFailedOverlay(
+                            message = error ?: loadingStatus,
+                            canTryNextFragment = viewModel.canSkipToNextOfflineChunk(),
+                            canFinalize = canFinalizeOffline && !isFinalizingSession,
+                            onNextFragment = viewModel::skipCurrentOfflineChunk,
+                            onBack = viewModel::dismissGenerationFailure,
+                            onFinalize = viewModel::finalizeOfflineSession
+                        )
+                    } else {
+                        OfflineLoadingOverlay(
+                            messages = loadingMessages,
+                            isFinalizing = isFinalizingSession,
+                            canFinalize = canFinalizeOffline && !isFinalizingSession,
+                            onFinalize = viewModel::finalizeOfflineSession
+                        )
+                    }
                 }
             } else {
                 PdfAiCenteredColumn {
@@ -147,19 +185,31 @@ fun SubiecteScreen(
                     PdfAiPdfSelector(
                         pdfItems = pdfItems,
                         selected = pickedPdf,
-                        onSelect = {
-                            viewModel.pickPdf(it)
-                            viewModel.resetToPicker()
-                        }
+                        onSelect = { viewModel.pickPdf(it) }
                     )
 
-                    if (isOfflineMode && offlinePhase == OfflineSubiectePhase.Idle) {
-                        PdfAiOfflineStatus(isOfflineMode = true)
+                    if (isOfflineMode && isModelWarmingUp) {
+                        Text(
+                            text = "Incarc modelul local…",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+
+                    if (offlinePhase == OfflineSubiectePhase.Idle) {
+                        if (isOfflineMode) {
+                            PdfAiOfflineStatus(isOfflineMode = true)
+                        }
                         PdfAiOfflineModelDownload(
+                            models = OfflineLlmModelCatalog.all,
+                            selectedModelId = selectedOfflineModelId,
                             offlineModelReady = offlineModelReady,
                             isDownloadingModel = isDownloadingModel,
                             modelDownloadProgress = modelDownloadProgress,
                             isLoading = isLoading,
+                            isModelInstalled = viewModel::isOfflineModelInstalled,
+                            onSelectModel = viewModel::setSelectedOfflineModel,
                             onDownloadModel = viewModel::downloadOfflineModel
                         )
                     }
@@ -178,7 +228,8 @@ fun SubiecteScreen(
                             currentQuizItem != null -> {
                             OfflineQuestionBlock(
                                 item = currentQuizItem!!,
-                                onSubmit = viewModel::submitOfflineAnswer
+                                onSubmit = viewModel::submitOfflineAnswer,
+                                onFinalize = viewModel::finalizeOfflineSession
                             )
                         }
 
@@ -187,7 +238,8 @@ fun SubiecteScreen(
                             OfflineFeedbackBlock(
                                 item = currentQuizItem!!,
                                 hasMoreQuestions = viewModel.hasMoreOfflineQuestions(),
-                                onContinue = viewModel::continueOfflineQuiz
+                                onContinue = viewModel::continueOfflineQuiz,
+                                onFinalize = viewModel::finalizeOfflineSession
                             )
                         }
 
@@ -209,8 +261,22 @@ fun SubiecteScreen(
                                 onRangeTo = viewModel::setRangeTo
                             )
                             error?.let { PdfAiErrorCard(it) }
+                            sessionNotice?.let { notice ->
+                                Text(
+                                    text = notice,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Spacer(Modifier.height(8.dp))
+                            }
                             TechPrimaryButton(
-                                text = if (isOfflineMode) "Incepe recapitularea" else "Genereaza subiecte",
+                                text = when {
+                                    isOfflineMode && viewModel.hasUnusedOfflineChunks() ->
+                                        "Genereaza intrebarea"
+                                    isOfflineMode -> "Incepe recapitularea"
+                                    else -> "Genereaza subiecte"
+                                },
                                 onClick = { viewModel.generate() },
                                 enabled = !isDownloadingModel &&
                                     (!isOfflineMode || offlineModelReady) &&
@@ -224,8 +290,118 @@ fun SubiecteScreen(
             PdfAiModelDownloadOverlay(
                 visible = isDownloadingModel,
                 progress = modelDownloadProgress,
-                modelLabel = OfflineLlmModelCatalog.defaultModel.displayName
+                modelLabel = selectedModel.displayName
             )
+        }
+    }
+}
+
+@Composable
+private fun OfflineLoadingOverlay(
+    messages: List<String>,
+    isFinalizing: Boolean,
+    canFinalize: Boolean,
+    onFinalize: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        if (isFinalizing) {
+            CircularProgressIndicator()
+            Spacer(Modifier.height(16.dp))
+            Text(
+                text = "Se opreste modelul…",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            PdfFlowLoadingAnimation(messages = messages)
+        }
+        if (canFinalize) {
+            Spacer(Modifier.height(24.dp))
+            OfflineFinalizeSessionButton(onClick = onFinalize)
+        }
+    }
+}
+
+@Composable
+private fun OfflineFinalizeSessionButton(onClick: () -> Unit) {
+    TextButton(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Text("Finalizeaza sesiunea")
+    }
+}
+
+@Composable
+private fun OfflineGenerationFailedOverlay(
+    message: String,
+    canTryNextFragment: Boolean,
+    canFinalize: Boolean,
+    onNextFragment: () -> Unit,
+    onBack: () -> Unit,
+    onFinalize: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text(
+            text = message,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.error,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(Modifier.height(12.dp))
+        if (canTryNextFragment) {
+            Text(
+                text = "Poti incerca un alt fragment din PDF.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(20.dp))
+            TechPrimaryButton(
+                text = "Urmatorul fragment",
+                onClick = onNextFragment,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(8.dp))
+            TextButton(
+                onClick = onBack,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Inapoi")
+            }
+            if (canFinalize) {
+                OfflineFinalizeSessionButton(onClick = onFinalize)
+            }
+        } else {
+            Text(
+                text = "Nu mai sunt alte fragmente de incercat in acest PDF.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(20.dp))
+            TechPrimaryButton(
+                text = "Inapoi",
+                onClick = onBack,
+                modifier = Modifier.fillMaxWidth()
+            )
+            if (canFinalize) {
+                Spacer(Modifier.height(8.dp))
+                OfflineFinalizeSessionButton(onClick = onFinalize)
+            }
         }
     }
 }
@@ -233,15 +409,22 @@ fun SubiecteScreen(
 @Composable
 private fun OfflineQuestionBlock(
     item: OfflineQuizItem,
-    onSubmit: (String) -> Unit
+    onSubmit: (String) -> Unit,
+    onFinalize: () -> Unit
 ) {
     var answer by remember(item.pageNumber, item.question) { mutableStateOf("") }
 
-    PdfAiElevatedContentCard(sectionLabel = "Pagina ${item.pageNumber}") {
+    PdfAiElevatedContentCard(sectionLabel = "Intrebare") {
         Text(
             item.question,
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.SemiBold
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Raspunsul il poti gasi la pagina ${item.pageNumber}.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
     Spacer(Modifier.height(12.dp))
@@ -259,16 +442,19 @@ private fun OfflineQuestionBlock(
         enabled = answer.isNotBlank(),
         modifier = Modifier.fillMaxWidth()
     )
+    Spacer(Modifier.height(8.dp))
+    OfflineFinalizeSessionButton(onClick = onFinalize)
 }
 
 @Composable
 private fun OfflineFeedbackBlock(
     item: OfflineQuizItem,
     hasMoreQuestions: Boolean,
-    onContinue: () -> Unit
+    onContinue: () -> Unit,
+    onFinalize: () -> Unit
 ) {
     val eval = item.evaluation ?: return
-    PdfAiElevatedContentCard(sectionLabel = "Pagina ${item.pageNumber}") {
+    PdfAiElevatedContentCard(sectionLabel = "Rezultat") {
         Text(
             item.question,
             style = MaterialTheme.typography.labelMedium,
@@ -280,7 +466,7 @@ private fun OfflineFeedbackBlock(
             style = MaterialTheme.typography.bodyMedium
         )
         Spacer(Modifier.height(12.dp))
-        EvaluationSummary(eval)
+        OfflineEvaluationSummary(eval = eval, pageNumber = item.pageNumber)
     }
     Spacer(Modifier.height(12.dp))
     if (hasMoreQuestions) {
@@ -291,18 +477,20 @@ private fun OfflineFeedbackBlock(
         )
     } else {
         Text(
-            "Nu mai sunt pagini noi in acest PDF.",
+            "Nu mai sunt fragmente noi in acest PDF.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.fillMaxWidth()
         )
     }
+    Spacer(Modifier.height(8.dp))
+    OfflineFinalizeSessionButton(onClick = onFinalize)
 }
 
 @Composable
 private fun OfflineExhaustedBlock(onRestart: () -> Unit) {
     Text(
-        "Nu s-au putut genera mai multe intrebari din paginile disponibile.",
+        "Nu s-au putut genera mai multe intrebari din fragmentele disponibile.",
         style = MaterialTheme.typography.bodyMedium,
         modifier = Modifier.fillMaxWidth()
     )
@@ -311,6 +499,27 @@ private fun OfflineExhaustedBlock(onRestart: () -> Unit) {
         text = "Alt PDF / interval",
         onClick = onRestart,
         modifier = Modifier.fillMaxWidth()
+    )
+}
+
+@Composable
+private fun OfflineEvaluationSummary(eval: AnswerEvaluation, pageNumber: Int) {
+    val verdict = when (eval.corect) {
+        "da" -> "Raspuns corect"
+        "partial" -> "Raspuns partial corect"
+        else -> "Raspuns incorect"
+    }
+    Text(
+        verdict,
+        style = MaterialTheme.typography.titleSmall,
+        fontWeight = FontWeight.Bold,
+        color = MaterialTheme.colorScheme.primary
+    )
+    Spacer(Modifier.height(8.dp))
+    Text(
+        "Raspunsul il poti gasi la pagina $pageNumber.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
     )
 }
 

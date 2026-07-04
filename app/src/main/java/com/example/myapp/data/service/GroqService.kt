@@ -30,170 +30,16 @@ class GroqService(private val apiKey: String) {
     private val gson = Gson()
     private val baseUrl = "https://api.groq.com/openai/v1/chat/completions"
     
-    suspend fun generateQuiz(subject: String, numQuestions: Int): Result<QuizResponse> {
-        return withContext(Dispatchers.IO) {
-            try {
-                val prompt = """
-                    Generează $numQuestions întrebări grilă educaționale în limba română despre: $subject.
-                    
-                    Reguli importante: Întrebările trebuie să fie scurte și concize (maximum 1-2 propoziții). Evită întrebări foarte lungi sau paragrafe.
-                    
-                    Fiecare întrebare trebuie să aibă:
-                    - O întrebare clară și precisă, scurtă
-                    - Exact 4 variante de răspuns (A, B, C, D), de asemenea scurte
-                    - Un index corect (0-3) care indică răspunsul corect
-                    - O explicație opțională pentru răspunsul corect
-                    
-                    Returnează răspunsul doar ca JSON, fără text adițional, în formatul:
-                    {
-                        "subject": "$subject",
-                        "numQuestions": $numQuestions,
-                        "questions": [
-                            {
-                                "question": "Întrebarea 1",
-                                "options": ["Răspuns A", "Răspuns B", "Răspuns C", "Răspuns D"],
-                                "correctIndex": 0,
-                                "explanation": "Explicație opțională"
-                            }
-                        ]
-                    }
-                """.trimIndent()
-                
-                val response = makeRequest(prompt)
-                parseQuizResponse(response, subject, numQuestions)
-            } catch (e: Exception) {
-                Result.failure(e)
-            }
-        }
-    }
-    
     /**
-     * Mod „Adaptive learning”
-     *
-     * Generează un quiz nou ținând cont de performanța anterioară a utilizatorului.
-     *
-     * @param subject Subiectul principal de învățare.
-     * @param numQuestions Numărul de întrebări dorite.
-     * @param difficulty Nivelul țintă de dificultate (ex: "ușor", "mediu", "greu", "mix").
-     * @param previousPerformance Un rezumat text al răspunsurilor anterioare ale utilizatorului
-     * (de ex.: ce întrebări a greșit, ce concepte i-au creat probleme, ce i-a fost ușor).
-     */
-    suspend fun generateAdaptiveQuiz(
-        subject: String,
-        numQuestions: Int,
-        difficulty: String,
-        previousPerformance: String?
-    ): Result<QuizResponse> {
-        return withContext(Dispatchers.IO) {
-            try {
-                val performanceText = previousPerformance?.takeIf { it.isNotBlank() }
-                    ?: "Nu există istoric detaliat al utilizatorului. Consideră că este la nivel mediu."
-
-                val prompt = """
-                    Ești un sistem de învățare adaptivă.
-                    
-                    Obiectiv: Generează $numQuestions întrebări grilă educaționale în limba română despre: $subject,
-                    ajustând dificultatea și tipul întrebărilor în funcție de istoricul utilizatorului.
-                    
-                    Informații despre utilizator și răspunsurile sale anterioare:
-                    $performanceText
-                    
-                    Mod de lucru „Adaptive learning”:
-                    - Adaptează dificultatea generală a întrebărilor la nivelul: "$difficulty".
-                    - Dacă din istoric reiese că utilizatorul a greșit anumite concepte sau tipuri de întrebări,
-                      include mai multe întrebări similare ulterior pentru consolidare.
-                    - Pentru întrebările pe concepte greșite sau dificile, oferă explicații MAI DETALIATE
-                      (pași, exemple simple, comparații intuitive).
-                    - Pentru conceptele bine stăpânite poți oferi întrebări puțin mai dificile, dar menține
-                      explicațiile mai scurte.
-                    
-                    Reguli importante pentru întrebări:
-                    - Întrebările trebuie să fie scurte și concise (maximum 1-2 propoziții).
-                    - Evită întrebări foarte lungi sau paragrafe.
-                    - Fiecare întrebare trebuie să aibă exact 4 variante de răspuns (A, B, C, D), scurte.
-                    
-                    Pentru fiecare întrebare include:
-                    - "question": textul întrebării
-                    - "options": lista cu 4 variante de răspuns
-                    - "correctIndex": un index (0-3) pentru răspunsul corect
-                    - "explanation": o explicație în limba română
-                      - Dacă întrebarea vizează un concept pe care utilizatorul l-a greșit anterior,
-                        explicația trebuie să fie mai detaliată și prietenoasă.
-                    
-                    Returnează răspunsul doar ca JSON, fără text adițional, în formatul:
-                    {
-                        "subject": "$subject (Adaptive learning)",
-                        "numQuestions": $numQuestions,
-                        "questions": [
-                            {
-                                "question": "Întrebarea 1",
-                                "options": ["Răspuns A", "Răspuns B", "Răspuns C", "Răspuns D"],
-                                "correctIndex": 0,
-                                "explanation": "Explicație adaptată nivelului utilizatorului"
-                            }
-                        ]
-                    }
-                """.trimIndent()
-                
-                val response = makeRequest(prompt)
-                parseQuizResponse(response, "$subject (Adaptive learning)", numQuestions)
-            } catch (e: Exception) {
-                Result.failure(e)
-            }
-        }
-    }
-    
-    suspend fun generateQuizFromPdf(pdfText: String, numQuestions: Int): Result<QuizResponse> {
-        return withContext(Dispatchers.IO) {
-            try {
-                val prompt = """
-                    Pe baza următorului text dintr-un document PDF, generează $numQuestions întrebări grilă educaționale în limba română.
-                    
-                    Reguli importante: Întrebările trebuie să fie scurte și concize (maximum 1-2 propoziții). Evită întrebări foarte lungi sau paragrafe. Variantele de răspuns trebuie să fie la fel scurte.
-                    
-                    Text din PDF:
-                    $pdfText
-                    
-                    Fiecare întrebare trebuie să aibă:
-                    - O întrebare clară și precisă, scurtă, bazată pe conținutul textului
-                    - Exact 4 variante de răspuns (A, B, C, D), scurte
-                    - Un index corect (0-3) care indică răspunsul corect
-                    - O explicație opțională pentru răspunsul corect
-                    
-                    Returnează răspunsul doar ca JSON, fără text adițional, în formatul:
-                    {
-                        "subject": "Quiz din PDF",
-                        "numQuestions": $numQuestions,
-                        "questions": [
-                            {
-                                "question": "Întrebarea 1",
-                                "options": ["Răspuns A", "Răspuns B", "Răspuns C", "Răspuns D"],
-                                "correctIndex": 0,
-                                "explanation": "Explicație opțională"
-                            }
-                        ]
-                    }
-                """.trimIndent()
-                
-                val response = makeRequest(prompt)
-                parseQuizResponse(response, "Quiz din PDF", numQuestions)
-            } catch (e: Exception) {
-                Result.failure(e)
-            }
-        }
-    }
-
-    suspend fun generateQuizFromChunk(chunkText: String, questionsPerChunk: Int): Result<QuizResponse> {
-        return generateQuizFromPageText(pageNumber = 0, pageText = chunkText, numQuestions = questionsPerChunk)
-    }
-
-    /**
-     * Generează întrebări grilă din textul unei pagini (apel optimizat: prompt scurt, json_object, tokeni proporționali).
+     * Generează întrebări grilă din textul unei pagini PDF.
+     * Cu [difficulty] și [previousPerformance], personalizează dificultatea și explicațiile (învățare adaptivă).
      */
     suspend fun generateQuizFromPageText(
         pageNumber: Int,
         pageText: String,
-        numQuestions: Int
+        numQuestions: Int,
+        difficulty: String? = null,
+        previousPerformance: String? = null
     ): Result<QuizResponse> {
         return withContext(Dispatchers.IO) {
             try {
@@ -205,12 +51,25 @@ class GroqService(private val apiKey: String) {
                     return@withContext Result.failure(Exception("Fragmentul de pagină este gol."))
                 }
                 val pageLabel = if (pageNumber > 0) "pagina $pageNumber" else "fragment PDF"
+                val adaptiveBlock = if (!difficulty.isNullOrBlank() && !previousPerformance.isNullOrBlank()) {
+                    """
+                    Învățare adaptivă (același PDF):
+                    - Nivel țintă: $difficulty
+                    - Istoric utilizator:
+                    $previousPerformance
+                    - Insistă pe conceptele greșite anterior dacă apar în text; explicații mai detaliate acolo.
+                    - Pentru concepte bine stăpânite: întrebări puțin mai provocatoare, explicații scurte.
+                    """.trimIndent()
+                } else {
+                    ""
+                }
                 val prompt = """
                     Ești profesor. Pe baza textului de la $pageLabel, generează exact $numQuestions întrebări grilă în română.
                     Reguli: întrebări scurte (max 2 propoziții); 4 variante scurte; correctIndex 0-3; explanation în 1 propoziție.
                     Cele $numQuestions întrebări trebuie să acopere concepte diferite din text.
                     Lucrează STRICT din text; nu inventa informații.
                     În JSON nu folosi ghilimele duble în interiorul stringurilor; fără markdown.
+                    $adaptiveBlock
 
                     TEXT:
                     $cappedText

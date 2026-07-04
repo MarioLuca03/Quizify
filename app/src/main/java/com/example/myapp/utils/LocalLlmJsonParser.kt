@@ -6,10 +6,18 @@ import com.google.gson.JsonParser
 
 object LocalLlmJsonParser {
 
+    fun sanitizeRawModelOutput(text: String): String {
+        var t = text.trim()
+        t = t.replace(Regex("""(?i)```json\s*"""), "")
+        t = t.replace(Regex("""```"""), "")
+        return t.trim()
+    }
+
     fun extractJsonBlock(text: String): String? {
-        val start = text.indexOf('{')
-        val end = text.lastIndexOf('}')
-        if (start >= 0 && end > start) return text.substring(start, end + 1)
+        val cleaned = sanitizeRawModelOutput(text)
+        val start = cleaned.indexOf('{')
+        val end = cleaned.lastIndexOf('}')
+        if (start >= 0 && end > start) return cleaned.substring(start, end + 1)
         return null
     }
 
@@ -25,8 +33,14 @@ object LocalLlmJsonParser {
                 else -> false
             }
             if (skip) return PageQuestionResult(skip = true)
-            val q = o.get("intrebare")?.asString?.trim().orEmpty()
-            val a = o.get("raspuns_asteptat")?.asString?.trim().orEmpty()
+            val q = sequenceOf("question", "intrebare")
+                .mapNotNull { key -> o.get(key)?.takeIf { it.isJsonPrimitive }?.asString?.trim() }
+                .firstOrNull()
+                .orEmpty()
+            val a = sequenceOf("referenceAnswer", "raspuns_asteptat", "raspunsAsteptat")
+                .mapNotNull { key -> o.get(key)?.takeIf { it.isJsonPrimitive }?.asString?.trim() }
+                .firstOrNull()
+                .orEmpty()
             if (q.isBlank() || a.isBlank()) null
             else PageQuestionResult(skip = false, intrebare = q, raspunsAsteptat = a)
         } catch (_: Exception) {

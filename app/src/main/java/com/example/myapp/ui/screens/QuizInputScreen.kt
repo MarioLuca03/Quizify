@@ -26,10 +26,8 @@ import com.example.myapp.ui.viewmodel.PdfItem
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun QuizInputScreen(
-    apiKey: String,
     pdfItems: List<PdfItem> = emptyList(),
     onBack: () -> Unit,
-    onGenerateQuiz: (subject: String, level: String, numQuestions: Int) -> Unit,
     onGenerateQuizFromPdf: (pdfUri: Uri, numQuestions: Int, isExamMode: Boolean) -> Unit
 ) {
     var selectedFolder by remember { mutableStateOf<String?>(null) }

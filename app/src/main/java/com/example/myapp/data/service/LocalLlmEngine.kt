@@ -50,7 +50,34 @@ object LocalLlmEngine {
 
     private var loadedModelPath: String? = null
 
-
+    /** Încarcă modelul în RAM fără generare (warm-up la intrarea în Subiecte). */
+    suspend fun warmUp(context: Context, modelPath: String): Result<Unit> =
+        withContext(Dispatchers.Default) {
+            mutex.withLock {
+                try {
+                    LocalLlmPromptGuard.verifyModelFile(
+                        modelPath,
+                        OfflineLlmModelCatalog.minBytesForPath(modelPath)
+                    )?.let { return@withLock Result.failure(Exception(it)) }
+                    ensureEngine(context, modelPath)
+                    recreateSession(
+                        llmInference ?: return@withLock Result.failure(
+                            Exception("Modelul local nu s-a incarcat.")
+                        ),
+                        temperature = 0.2f
+                    )
+                    Result.success(Unit)
+                } catch (e: OutOfMemoryError) {
+                    release()
+                    Result.failure(
+                        Exception("Memorie insuficienta pentru modelul local.")
+                    )
+                } catch (e: Throwable) {
+                    closeSessionOnly()
+                    Result.failure(Exception(e.message ?: "Eroare la incarcarea modelului."))
+                }
+            }
+        }
 
     suspend fun generatePageQuestion(
 
@@ -62,19 +89,58 @@ object LocalLlmEngine {
 
     ): Result<PageQuestionResult> = withContext(Dispatchers.Default) {
 
-        LocalLlmPromptGuard.verifyModelFile(modelPath, OfflineLlmModelCatalog.defaultModel.minBytes)
+        LocalLlmPromptGuard.verifyModelFile(
+            modelPath,
+            OfflineLlmModelCatalog.minBytesForPath(modelPath)
+        )
 
             ?.let { return@withContext Result.failure(Exception(it)) }
 
 
 
-        val prompt = buildQuestionPrompt(pageText)
+        val first = attemptQuestionGeneration(context, modelPath, pageText, retry = false)
 
-        runInference(context, modelPath, prompt, temperature = 0.1f).map { raw ->
+        if (first != null && !first.skip) {
 
-            LocalLlmQuestionParser.parse(raw) ?: PageQuestionResult(skip = true)
+            return@withContext Result.success(first)
 
         }
+
+
+
+        val second = attemptQuestionGeneration(context, modelPath, pageText, retry = true)
+
+        when {
+
+            second != null && !second.skip -> Result.success(second)
+
+            else -> Result.success(PageQuestionResult(skip = true))
+
+        }
+
+    }
+
+
+
+    private suspend fun attemptQuestionGeneration(
+
+        context: Context,
+
+        modelPath: String,
+
+        pageText: String,
+
+        retry: Boolean
+
+    ): PageQuestionResult? {
+
+        val prompt = if (retry) buildQuestionRetryPrompt(pageText) else buildQuestionPrompt(pageText)
+
+        return runInference(context, modelPath, prompt, temperature = 0.2f)
+
+            .getOrNull()
+
+            ?.let { raw -> LocalLlmQuestionParser.parse(raw) }
 
     }
 
@@ -94,7 +160,10 @@ object LocalLlmEngine {
 
     ): Result<AnswerEvaluation> = withContext(Dispatchers.Default) {
 
-        LocalLlmPromptGuard.verifyModelFile(modelPath, OfflineLlmModelCatalog.defaultModel.minBytes)
+        LocalLlmPromptGuard.verifyModelFile(
+            modelPath,
+            OfflineLlmModelCatalog.minBytesForPath(modelPath)
+        )
 
             ?.let { return@withContext Result.failure(Exception(it)) }
 
@@ -194,7 +263,7 @@ object LocalLlmEngine {
 
                 .setTopK(8)
 
-                .setTopP(0.85f)
+                .setTopP(0.8f)
 
                 .build()
 
@@ -254,15 +323,47 @@ object LocalLlmEngine {
 
     private fun buildQuestionPrompt(pageText: String): String = """
 
-        Scrie exact 2 randuri din fragment:
+        Esti profesor. Genereaza exact o intrebare deschisa STRICT in limba romana.
 
-        I: intrebare scurta
+        Raspunde DOAR cu JSON valid, fara markdown si fara engleza:
 
-        R: raspuns scurt (max 15 cuvinte)
-
-        Daca nu e suficient text, scrie doar: SKIP
+        {"question":"...?","referenceAnswer":"..."}
 
 
+
+        Reguli:
+
+        - limba romana obligatorie (fara what/how/explain)
+
+        - intrebarea se bazeaza strict pe fragment
+
+        - intrebarea incepe cu Ce/Care/Cum/De ce etc. si se termina cu ?
+
+        - referenceAnswer scurt in romana (max 20 cuvinte)
+
+        - fara variante de raspuns
+
+
+
+        FRAGMENT:
+
+        $pageText
+
+    """.trimIndent()
+
+
+
+    private fun buildQuestionRetryPrompt(pageText: String): String = """
+
+        Raspuns invalid sau in engleza. Scrie DOAR in romana.
+
+        Returneaza DOAR JSON:
+
+        {"question":"...?","referenceAnswer":"..."}
+
+
+
+        FRAGMENT:
 
         $pageText
 

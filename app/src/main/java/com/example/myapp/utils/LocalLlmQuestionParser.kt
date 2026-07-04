@@ -3,7 +3,7 @@ package com.example.myapp.utils
 import com.example.myapp.data.model.PageQuestionResult
 
 /**
- * Parser rapid pentru răspunsuri scurte I:/R: (preferat) sau JSON (fallback).
+ * Parser pentru răspunsuri I:/R: sau JSON (question / referenceAnswer), doar română.
  */
 object LocalLlmQuestionParser {
 
@@ -12,7 +12,7 @@ object LocalLlmQuestionParser {
     private val answerLine = Regex("""(?im)^\s*R\s*:\s*(.+)$""")
 
     fun parse(raw: String): PageQuestionResult? {
-        val trimmed = raw.trim()
+        val trimmed = LocalLlmJsonParser.sanitizeRawModelOutput(raw)
         if (trimmed.isBlank()) return null
         if (skipPattern.containsMatchIn(trimmed) ||
             trimmed.equals("SKIP", ignoreCase = true)
@@ -23,9 +23,24 @@ object LocalLlmQuestionParser {
         val q = questionLine.find(trimmed)?.groupValues?.getOrNull(1)?.trim().orEmpty()
         val a = answerLine.find(trimmed)?.groupValues?.getOrNull(1)?.trim().orEmpty()
         if (q.isNotBlank() && a.isNotBlank()) {
-            return PageQuestionResult(skip = false, intrebare = q, raspunsAsteptat = a)
+            return validate(PageQuestionResult(skip = false, intrebare = q, raspunsAsteptat = a))
         }
 
-        return LocalLlmJsonParser.parsePageQuestion(raw)
+        return validate(LocalLlmJsonParser.parsePageQuestion(trimmed))
+    }
+
+    private fun validate(result: PageQuestionResult?): PageQuestionResult? {
+        if (result == null || result.skip) return result
+
+        var q = RomanianAsciiNormalizer.fixRomanianText(result.intrebare).trim()
+        val a = RomanianAsciiNormalizer.fixRomanianText(result.raspunsAsteptat).trim()
+
+        if (!q.contains('?')) {
+            q = "$q?"
+        }
+        if (!OfflineRomanianTextGuard.isValidRomanianQuestion(q)) return null
+        if (!OfflineRomanianTextGuard.isAcceptableRomanianAnswer(a)) return null
+
+        return result.copy(intrebare = q, raspunsAsteptat = a)
     }
 }

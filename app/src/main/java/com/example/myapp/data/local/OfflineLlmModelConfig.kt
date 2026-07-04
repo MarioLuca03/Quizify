@@ -8,11 +8,14 @@ object OfflineLlmModelConfig {
     const val MIN_PAGE_CHARS = 250
 
     /** Chunk trimis la model per întrebare offline (mai mic = inferență mai rapidă). */
-    const val CHUNK_WORDS_MIN = 40
-    const val CHUNK_WORDS_MAX = 70
+    const val CHUNK_WORDS_MIN = 35
+    const val CHUNK_WORDS_MAX = 50
 
     /** ~[CHUNK_WORDS_MAX] cuvinte — folosit de [LocalLlmTextPreprocessor]. */
     const val MAX_PAGE_CHARS_FOR_AI = CHUNK_WORDS_MAX * 6
+
+    /** La extragere PDF: limitează textul stocat per pagină (PDF-uri foarte dense). */
+    const val MAX_STORED_CHARS_PER_PAGE = 10_000
 
     /** Pool candidați: top N pagini după scor, apoi amestecate. */
     const val OFFLINE_CANDIDATE_POOL_SIZE = 30

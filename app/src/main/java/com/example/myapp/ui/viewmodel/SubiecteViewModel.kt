@@ -18,11 +18,12 @@ import com.example.myapp.data.model.AnswerEvaluation
 
 import com.example.myapp.data.model.ExamSubjectsPack
 
+import com.example.myapp.data.model.OfflineQuestionChunk
 import com.example.myapp.data.model.OfflineQuizItem
 
 import com.example.myapp.data.model.OfflineSubiectePhase
 
-import com.example.myapp.data.model.PdfPageContent
+import com.example.myapp.data.model.PerPageSmartPdfExtraction
 
 import com.example.myapp.data.service.GroqService
 
@@ -46,11 +47,13 @@ import kotlinx.coroutines.flow.StateFlow
 
 import kotlinx.coroutines.flow.asStateFlow
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 
 
@@ -98,6 +101,10 @@ class SubiecteViewModel(
 
     val error: StateFlow<String?> = _error.asStateFlow()
 
+    private val _sessionNotice = MutableStateFlow<String?>(null)
+
+    val sessionNotice: StateFlow<String?> = _sessionNotice.asStateFlow()
+
 
 
     private val _pdfPageCount = MutableStateFlow<Int?>(null)
@@ -127,6 +134,10 @@ class SubiecteViewModel(
     private val _offlineModelReady = MutableStateFlow(false)
 
     val offlineModelReady: StateFlow<Boolean> = _offlineModelReady.asStateFlow()
+
+    private val _selectedOfflineModelId = MutableStateFlow(OfflineLlmModelCatalog.DEFAULT_MODEL_ID)
+
+    val selectedOfflineModelId: StateFlow<String> = _selectedOfflineModelId.asStateFlow()
 
 
 
@@ -160,15 +171,9 @@ class SubiecteViewModel(
 
 
 
-    private val _pagePool = MutableStateFlow<List<PdfPageContent>>(emptyList())
+    private val _chunkPool = MutableStateFlow<List<OfflineQuestionChunk>>(emptyList())
 
-    val pagePool: StateFlow<List<PdfPageContent>> = _pagePool.asStateFlow()
-
-
-
-    private val _usedPageNumbers = MutableStateFlow<Set<Int>>(emptySet())
-
-    val usedPageNumbers: StateFlow<Set<Int>> = _usedPageNumbers.asStateFlow()
+    private val _usedChunkIds = MutableStateFlow<Set<String>>(emptySet())
 
 
 
@@ -182,8 +187,23 @@ class SubiecteViewModel(
 
     val loadingStatus: StateFlow<String> = _loadingStatus.asStateFlow()
 
+    private val _isModelWarmingUp = MutableStateFlow(false)
+
+    val isModelWarmingUp: StateFlow<Boolean> = _isModelWarmingUp.asStateFlow()
+
+    private val _isFinalizingSession = MutableStateFlow(false)
+
+    val isFinalizingSession: StateFlow<Boolean> = _isFinalizingSession.asStateFlow()
+
     private var prefetchJob: Job? = null
     private var prefetchedItem: OfflineQuizItem? = null
+
+    private var offlineWorkJob: Job? = null
+    private var generationEpoch = 0
+
+    private var modelWarmJob: Job? = null
+    private var offlineModelWarmedUp = false
+    private var failedChunkId: String? = null
 
     val isOfflineQuizActive: Boolean
 
@@ -194,13 +214,9 @@ class SubiecteViewModel(
 
 
     fun hasMoreOfflineQuestions(): Boolean {
-
-        val used = _usedPageNumbers.value
-
-        val current = _currentQuizItem.value?.pageNumber
-
-        return _pagePool.value.any { it.pageNumber !in used && it.pageNumber != current }
-
+        val used = _usedChunkIds.value
+        val current = _currentQuizItem.value?.chunkId
+        return _chunkPool.value.any { it.id !in used && it.id != current }
     }
 
 
@@ -224,64 +240,70 @@ class SubiecteViewModel(
 
 
     fun refreshOfflineModelStatus() {
-
+        _selectedOfflineModelId.value = offlineModelRepository.getSelectedModel().id
         _offlineModelReady.value = offlineModelRepository.isModelReady()
-
     }
 
+    fun onSubiecteScreenVisible() {
+        refreshOfflineModelStatus()
+        warmUpModelIfReady()
+    }
 
+    private fun warmUpModelIfReady() {
+        if (!offlineModelRepository.isModelReady()) return
+        if (offlineModelWarmedUp || modelWarmJob?.isActive == true) return
+        modelWarmJob = viewModelScope.launch(Dispatchers.Default) {
+            _isModelWarmingUp.value = true
+            LocalLlmEngine.warmUp(context, offlineModelRepository.getModelPath())
+            offlineModelWarmedUp = true
+            _isModelWarmingUp.value = false
+        }
+    }
+
+    fun setSelectedOfflineModel(modelId: String) {
+        if (_isDownloadingModel.value) return
+        offlineModelRepository.setSelectedModel(modelId)
+        _selectedOfflineModelId.value = modelId
+        offlineModelWarmedUp = false
+        LocalLlmEngine.release()
+        refreshOfflineModelStatus()
+    }
+
+    fun isOfflineModelInstalled(modelId: String): Boolean =
+        offlineModelRepository.isModelReady(modelId)
 
     fun downloadOfflineModel() {
-
         if (_isDownloadingModel.value) return
 
+        val model = offlineModelRepository.getSelectedModel()
+
         if (!NetworkUtils.isOnline(context)) {
-
             _error.value =
-                "Ai nevoie de internet pentru descarcarea ${OfflineLlmModelCatalog.defaultModel.displayName} (~520 MB)."
-
+                "Ai nevoie de internet pentru descarcarea ${model.displayName} (${model.sizeLabel})."
             return
-
         }
 
         viewModelScope.launch {
-
             _isDownloadingModel.value = true
-
             _offlineModelReady.value = false
-
             _error.value = null
-
             _modelDownloadProgress.value = 0.02f
 
-            offlineModelRepository.downloadModel { progress ->
-
+            offlineModelRepository.downloadModel(model) { progress ->
                 _modelDownloadProgress.value = progress
-
             }.fold(
-
                 onSuccess = {
-
                     _offlineModelReady.value = true
-
                     _modelDownloadProgress.value = 1f
-
+                    warmUpModelIfReady()
                 },
-
                 onFailure = { e ->
-
                     _error.value = e.message ?: "Descarcarea modelului a esuat."
-
                     _offlineModelReady.value = offlineModelRepository.isModelReady()
-
                 }
-
             )
-
             _isDownloadingModel.value = false
-
         }
-
     }
 
 
@@ -318,7 +340,7 @@ class SubiecteViewModel(
 
         _pickedPdf.value = item
 
-        clearAllSessions()
+        clearQuizSession()
 
         refreshConnectivity()
 
@@ -330,7 +352,7 @@ class SubiecteViewModel(
 
         _pdfPageCount.value = null
 
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
 
             PdfTextExtractor.getPdfPageCount(context, item.uri).fold(
 
@@ -356,34 +378,45 @@ class SubiecteViewModel(
 
     fun resetToPicker() {
 
-        clearAllSessions()
+        generationEpoch++
+        offlineWorkJob?.cancel()
+        offlineWorkJob = null
+
+        clearQuizSession()
+
+        LocalLlmEngine.release()
+
+        offlineModelWarmedUp = false
 
         _isLoading.value = false
+        _isFinalizingSession.value = false
 
     }
 
 
 
-    private fun clearAllSessions() {
+    private fun clearQuizSession() {
 
         _examPack.value = null
 
         _error.value = null
 
+        _sessionNotice.value = null
+
         _usedLocalAi.value = false
 
         _offlinePhase.value = OfflineSubiectePhase.Idle
 
-        _pagePool.value = emptyList()
+        _chunkPool.value = emptyList()
 
-        _usedPageNumbers.value = emptySet()
+        _usedChunkIds.value = emptySet()
 
         _currentQuizItem.value = null
 
         _loadingStatus.value = ""
 
         clearPrefetch()
-        LocalLlmEngine.release()
+        failedChunkId = null
 
     }
 
@@ -393,21 +426,28 @@ class SubiecteViewModel(
 
         val item = _pickedPdf.value ?: return
 
-        viewModelScope.launch {
+        launchOfflineWork {
 
             refreshConnectivity()
 
             _error.value = null
 
+            _sessionNotice.value = null
+
             _examPack.value = null
+
+            val offline = _isOfflineMode.value
+            if (offline && hasUnusedOfflineChunks() && failedChunkId == null) {
+                _usedLocalAi.value = true
+                loadNextQuestion()
+                return@launchOfflineWork
+            }
 
             _usedLocalAi.value = false
 
             clearOfflineQuizOnly()
 
 
-
-            val offline = _isOfflineMode.value
 
             if (offline) {
 
@@ -470,17 +510,136 @@ class SubiecteViewModel(
 
 
 
+    fun hasUnusedOfflineChunks(): Boolean {
+        val used = _usedChunkIds.value
+        return _chunkPool.value.any { it.id !in used }
+    }
+
+    fun hasPendingFragmentFailure(): Boolean = failedChunkId != null
+
+    fun canFinalizeOfflineSession(): Boolean {
+        if (!_isOfflineMode.value) return false
+        return when (_offlinePhase.value) {
+            OfflineSubiectePhase.LoadingQuestion,
+            OfflineSubiectePhase.GenerationFailed,
+            OfflineSubiectePhase.Question,
+            OfflineSubiectePhase.Feedback -> true
+            OfflineSubiectePhase.Idle -> _isLoading.value && _usedLocalAi.value
+            else -> false
+        }
+    }
+
+    fun finalizeOfflineSession() {
+        if (!canFinalizeOfflineSession() || _isFinalizingSession.value) return
+
+        viewModelScope.launch {
+            _isFinalizingSession.value = true
+            _isLoading.value = true
+            _loadingStatus.value = "Se opreste modelul…"
+            generationEpoch++
+            offlineWorkJob?.cancel()
+            offlineWorkJob = null
+            clearPrefetch()
+            modelWarmJob?.cancel()
+            modelWarmJob = null
+            offlineModelWarmedUp = false
+
+            withContext(Dispatchers.Default) {
+                LocalLlmEngine.release()
+            }
+
+            if (_offlinePhase.value == OfflineSubiectePhase.Feedback) {
+                val finished = _currentQuizItem.value
+                if (finished != null) {
+                    _usedChunkIds.value = _usedChunkIds.value + finished.chunkId
+                }
+            }
+
+            failedChunkId = null
+            _currentQuizItem.value = null
+            _offlinePhase.value = OfflineSubiectePhase.Idle
+            _isLoading.value = false
+            _loadingStatus.value = ""
+            _error.value = null
+            _isModelWarmingUp.value = false
+
+            val completed = _usedChunkIds.value.size
+            _sessionNotice.value = when {
+                completed == 1 ->
+                    "Sesiune finalizata. Ai parcurs 1 fragment. Poti continua mai tarziu."
+                completed > 1 ->
+                    "Sesiune finalizata. Ai parcurs $completed fragmente. Poti continua mai tarziu."
+                _chunkPool.value.isNotEmpty() ->
+                    "Sesiune finalizata. Poti continua mai tarziu."
+                else -> "Sesiune finalizata."
+            }
+
+            if (_chunkPool.value.isNotEmpty()) {
+                _usedLocalAi.value = true
+            }
+
+            _isFinalizingSession.value = false
+        }
+    }
+
+    private fun launchOfflineWork(block: suspend () -> Unit) {
+        offlineWorkJob?.cancel()
+        offlineWorkJob = viewModelScope.launch {
+            try {
+                block()
+            } catch (_: CancellationException) {
+                // Sesiune anulata prin finalizeaza / navigare.
+            }
+        }
+    }
+
+    fun canSkipToNextOfflineChunk(): Boolean {
+        val failed = failedChunkId ?: return false
+        if (_currentQuizItem.value != null) return false
+        if (_offlinePhase.value != OfflineSubiectePhase.GenerationFailed &&
+            _offlinePhase.value != OfflineSubiectePhase.Idle
+        ) {
+            return false
+        }
+        val usedWithFailed = _usedChunkIds.value + failed
+        return _chunkPool.value.any { it.id !in usedWithFailed }
+    }
+
+    fun skipCurrentOfflineChunk() {
+        val failed = failedChunkId ?: return
+        if (!canSkipToNextOfflineChunk()) return
+        _usedChunkIds.value = _usedChunkIds.value + failed
+        failedChunkId = null
+        _error.value = null
+        _offlinePhase.value = OfflineSubiectePhase.LoadingQuestion
+        _isLoading.value = true
+        _loadingStatus.value = "Generez intrebarea…"
+        launchOfflineWork {
+            loadNextQuestion()
+        }
+    }
+
+    fun dismissGenerationFailure() {
+        failedChunkId = null
+        _error.value = null
+        _loadingStatus.value = ""
+        _offlinePhase.value = OfflineSubiectePhase.Idle
+        _isLoading.value = false
+    }
+
+
+
     fun continueOfflineQuiz() {
 
         if (_offlinePhase.value != OfflineSubiectePhase.Feedback) return
 
         val finished = _currentQuizItem.value ?: return
 
-        _usedPageNumbers.value = _usedPageNumbers.value + finished.pageNumber
+        _usedChunkIds.value = _usedChunkIds.value + finished.chunkId
 
         _currentQuizItem.value = null
 
-        viewModelScope.launch {
+        launchOfflineWork {
 
             loadNextQuestion()
 
@@ -495,13 +654,13 @@ class SubiecteViewModel(
         if (!offlineModelRepository.isModelReady()) {
 
             _error.value =
-                "Esti offline. Descarca ${OfflineLlmModelCatalog.defaultModel.displayName} cand ai internet (~520 MB)."
+                "Esti offline. Descarca ${offlineModelRepository.getSelectedModel().displayName} cand ai internet."
 
             return
 
         }
 
-
+        val epoch = generationEpoch
 
         _isLoading.value = true
 
@@ -511,15 +670,15 @@ class SubiecteViewModel(
 
         try {
 
-            takeUriPermission(item)
-
-            val per = PdfTextExtractor.extractPerPageForSmartSummary(context, item.uri).getOrElse { e ->
+            val per = extractPdf(item).getOrElse { e ->
 
                 _error.value = e.message ?: "Nu s-a putut extrage textul din PDF."
 
                 return
 
             }
+
+            if (epoch != generationEpoch) return
 
             _pdfPageCount.value = per.totalPages
 
@@ -535,7 +694,7 @@ class SubiecteViewModel(
 
 
 
-            val pool = OfflineSubiectePageFilter.buildShuffledQuestionPool(
+            val pool = OfflineSubiectePageFilter.buildShuffledChunkPool(
 
                 pages = per.pages,
 
@@ -551,18 +710,18 @@ class SubiecteViewModel(
 
                 _error.value =
 
-                    "Nicio pagina valida (min. ${OfflineLlmModelConfig.MIN_PAGE_WORDS} cuvinte si " +
-                        "${OfflineLlmModelConfig.MIN_PAGE_CHARS} caractere). Alege alt interval sau un PDF cu mai mult text."
+                    "Niciun fragment de text suficient in PDF (min. ${OfflineLlmModelConfig.CHUNK_WORDS_MIN} cuvinte per fragment). " +
+                        "Alege alt interval sau un PDF cu mai mult continut."
 
                 return
 
             }
 
+            if (epoch != generationEpoch) return
 
+            _chunkPool.value = pool
 
-            _pagePool.value = pool
-
-            _usedPageNumbers.value = emptySet()
+            _usedChunkIds.value = emptySet()
 
             loadNextQuestion()
 
@@ -581,13 +740,14 @@ class SubiecteViewModel(
 
 
     private suspend fun loadNextQuestion() {
+        val epoch = generationEpoch
         prefetchJob?.cancel()
-        val used = _usedPageNumbers.value.toMutableSet()
-        val remaining = _pagePool.value.filter { it.pageNumber !in used }
+        val used = _usedChunkIds.value
+        val nextChunk = _chunkPool.value.firstOrNull { it.id !in used }
 
-        if (remaining.isEmpty()) {
+        if (nextChunk == null) {
+            if (epoch != generationEpoch) return
             clearPrefetch()
-            LocalLlmEngine.release()
             _offlinePhase.value = OfflineSubiectePhase.Exhausted
             _isLoading.value = false
             return
@@ -595,36 +755,37 @@ class SubiecteViewModel(
 
         val cached = prefetchedItem
         prefetchedItem = null
-        if (cached != null && cached.pageNumber !in used) {
-            applyQuestion(cached)
+        if (cached != null && cached.chunkId !in used) {
+            if (epoch != generationEpoch) return
+            applyQuestion(cached, epoch)
             return
         }
+
+        _offlinePhase.value = OfflineSubiectePhase.LoadingQuestion
+        _isLoading.value = true
+        _loadingStatus.value = "Generez intrebarea…"
+        _error.value = null
 
         val modelPath = offlineModelRepository.getModelPath()
-        for (page in remaining) {
-            _offlinePhase.value = OfflineSubiectePhase.LoadingQuestion
+        val item = generateQuestionForChunk(nextChunk, modelPath)
+        if (epoch != generationEpoch) return
+        if (item == null) {
+            failedChunkId = nextChunk.id
+            val message = "Nu s-a putut genera o intrebare din acest fragment."
+            _error.value = message
+            _loadingStatus.value = message
+            clearPrefetch()
+            _offlinePhase.value = OfflineSubiectePhase.GenerationFailed
             _isLoading.value = true
-            _loadingStatus.value = "Generez intrebarea (pagina ${page.pageNumber})…"
-            _error.value = null
-
-            val item = generateQuestionForPage(page, modelPath, isPrefetch = false)
-            if (item == null) {
-                used.add(page.pageNumber)
-                _usedPageNumbers.value = used.toSet()
-                continue
-            }
-
-            applyQuestion(item)
             return
         }
 
-        clearPrefetch()
-        LocalLlmEngine.release()
-        _offlinePhase.value = OfflineSubiectePhase.Exhausted
-        _isLoading.value = false
+        failedChunkId = null
+        applyQuestion(item, epoch)
     }
 
-    private fun applyQuestion(item: OfflineQuizItem) {
+    private fun applyQuestion(item: OfflineQuizItem, epoch: Int) {
+        if (epoch != generationEpoch) return
         _currentQuizItem.value = item
         _offlinePhase.value = OfflineSubiectePhase.Question
         _isLoading.value = false
@@ -639,60 +800,50 @@ class SubiecteViewModel(
         }
 
         prefetchJob = viewModelScope.launch(Dispatchers.Default) {
+            val epoch = generationEpoch
             delay(400)
-            if (!isActive) return@launch
-            val used = _usedPageNumbers.value
-            val current = _currentQuizItem.value?.pageNumber
-            val candidates = _pagePool.value.filter {
-                it.pageNumber !in used && it.pageNumber != current
-            }
-            if (candidates.isEmpty()) {
+            if (!isActive || epoch != generationEpoch) return@launch
+            val used = _usedChunkIds.value
+            val current = _currentQuizItem.value?.chunkId
+            val nextChunk = _chunkPool.value.firstOrNull {
+                it.id !in used && it.id != current
+            } ?: run {
                 prefetchedItem = null
                 return@launch
             }
 
             val modelPath = offlineModelRepository.getModelPath()
-            for (page in candidates) {
-                if (!isActive) return@launch
-                val item = generateQuestionForPage(page, modelPath, isPrefetch = true) ?: continue
-                prefetchedItem = item
-                return@launch
-            }
-            prefetchedItem = null
+            val prefetched = generateQuestionForChunk(nextChunk, modelPath)
+            if (epoch != generationEpoch) return@launch
+            prefetchedItem = prefetched
         }
     }
 
-    private suspend fun generateQuestionForPage(
-        page: PdfPageContent,
-        modelPath: String,
-        isPrefetch: Boolean = true
+    private suspend fun generateQuestionForChunk(
+        chunk: OfflineQuestionChunk,
+        modelPath: String
     ): OfflineQuizItem? {
-        val chunkText = OfflineSubiectePageFilter.textChunkForAi(page)
+        val chunkText = chunk.text.trim()
         if (chunkText.isBlank()) return null
 
-        val questionResult = LocalLlmEngine.generatePageQuestion(
+        val result = LocalLlmEngine.generatePageQuestion(
             context = context,
             modelPath = modelPath,
             pageText = chunkText
-        ).getOrElse { e ->
-            if (!isPrefetch) {
-                _error.value = e.message ?: "Generarea intrebarii a esuat."
-                _offlinePhase.value = OfflineSubiectePhase.Idle
-            }
-            return null
-        }
+        ).getOrNull() ?: return null
 
-        if (questionResult.skip ||
-            questionResult.intrebare.isBlank() ||
-            questionResult.raspunsAsteptat.isBlank()
+        if (result.skip ||
+            result.intrebare.isBlank() ||
+            result.raspunsAsteptat.isBlank()
         ) {
             return null
         }
 
         return OfflineQuizItem(
-            pageNumber = page.pageNumber,
-            question = questionResult.intrebare,
-            expectedAnswer = questionResult.raspunsAsteptat
+            chunkId = chunk.id,
+            pageNumber = chunk.pageNumber,
+            question = result.intrebare,
+            expectedAnswer = result.raspunsAsteptat
         )
     }
 
@@ -700,6 +851,19 @@ class SubiecteViewModel(
         prefetchJob?.cancel()
         prefetchJob = null
         prefetchedItem = null
+    }
+
+    private suspend fun extractPdf(item: PdfItem): Result<PerPageSmartPdfExtraction> =
+        withContext(Dispatchers.IO) {
+            takeUriPermission(item)
+            PdfTextExtractor.extractPerPageForSmartSummary(context, item.uri)
+        }
+
+    override fun onCleared() {
+        offlineWorkJob?.cancel()
+        modelWarmJob?.cancel()
+        LocalLlmEngine.release()
+        super.onCleared()
     }
 
 
@@ -720,7 +884,9 @@ class SubiecteViewModel(
 
 
 
-            val per = PdfTextExtractor.extractPerPageForSmartSummary(context, item.uri).getOrElse { e ->
+            takeUriPermission(item)
+
+            val per = extractPdf(item).getOrElse { e ->
 
                 _error.value = e.message ?: "Nu s-a putut extrage textul din PDF."
 
@@ -786,8 +952,8 @@ class SubiecteViewModel(
 
     private fun clearOfflineQuizOnly() {
         _offlinePhase.value = OfflineSubiectePhase.Idle
-        _pagePool.value = emptyList()
-        _usedPageNumbers.value = emptySet()
+        _chunkPool.value = emptyList()
+        _usedChunkIds.value = emptySet()
         _currentQuizItem.value = null
         _loadingStatus.value = ""
         clearPrefetch()

@@ -5,6 +5,7 @@ import android.net.Uri
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.text.PDFTextStripper
+import com.example.myapp.data.local.OfflineLlmModelConfig
 import com.example.myapp.data.model.PageNormalizedText
 import com.example.myapp.data.model.PdfExtractionDiagnostics
 import com.example.myapp.data.model.PdfPageTextStatus
@@ -242,7 +243,11 @@ object PdfTextExtractor {
             stripper.startPage = p
             stripper.endPage = p
             val raw = stripper.getText(document).trim()
-            val norm = PdfTextNormalizer.normalizeExtractedPdfText(raw)
+            var norm = PdfTextNormalizer.normalizeExtractedPdfText(raw)
+            if (norm.length > OfflineLlmModelConfig.MAX_STORED_CHARS_PER_PAGE) {
+                norm = norm.take(OfflineLlmModelConfig.MAX_STORED_CHARS_PER_PAGE) +
+                    "\n[... pagina trunchiata pentru performanta ...]"
+            }
             val needsOcr = raw.length < MIN_CHARS_SELECTABLE_PAGE
             statuses.add(PdfPageTextStatus(pageNumber = p, approxChars = raw.length, needsOcr = needsOcr))
             pages.add(PageNormalizedText(pageNumber = p, normalizedText = norm))

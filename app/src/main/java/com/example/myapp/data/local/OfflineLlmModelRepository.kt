@@ -25,11 +25,10 @@ class OfflineLlmModelRepository(context: Context) {
 
 
     init {
-
-        preferences.setSelectedModelId(OfflineLlmModelCatalog.DEFAULT_MODEL_ID)
-
+        if (preferences.getSelectedModelId() == "qwen25_05b") {
+            preferences.setSelectedModelId(OfflineLlmModelCatalog.DEFAULT_MODEL_ID)
+        }
         cleanupLegacyModels()
-
     }
 
 
@@ -47,6 +46,9 @@ class OfflineLlmModelRepository(context: Context) {
     }
 
 
+
+    fun isModelReady(modelId: String): Boolean =
+        isModelReady(OfflineLlmModelCatalog.byId(modelId))
 
     fun isModelReady(model: OfflineLlmModelOption = getSelectedModel()): Boolean {
 

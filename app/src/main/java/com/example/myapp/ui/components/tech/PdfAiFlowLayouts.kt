@@ -33,7 +33,11 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -217,8 +221,7 @@ fun PdfAiOfflineStatus(isOfflineMode: Boolean) {
             )
         }
         Text(
-            "Offline: o intrebare per pagina valida (min. ${OfflineLlmModelConfig.MIN_PAGE_WORDS} cuvinte, " +
-                "${OfflineLlmModelConfig.MIN_PAGE_CHARS} caractere). " +
+            "Offline: intrebarile sunt generate doar de modelul local, in romana. " +
                 "Raspunsul tau este evaluat local, instant.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -301,15 +304,20 @@ fun PdfAiModelDownloadOverlay(
 
 @Composable
 fun PdfAiOfflineModelDownload(
+    models: List<com.example.myapp.data.local.OfflineLlmModelOption>,
+    selectedModelId: String,
     offlineModelReady: Boolean,
     isDownloadingModel: Boolean,
     modelDownloadProgress: Float,
     isLoading: Boolean,
+    isModelInstalled: (String) -> Boolean,
+    onSelectModel: (String) -> Unit,
     onDownloadModel: () -> Unit
 ) {
+    val selected = models.find { it.id == selectedModelId } ?: models.firstOrNull()
     TechPanelCard(modifier = Modifier.fillMaxWidth()) {
         Text(
-            "Model offline (${OfflineLlmModelCatalog.defaultModel.displayName})",
+            "Model AI offline",
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.SemiBold,
             modifier = Modifier.fillMaxWidth(),
@@ -317,16 +325,51 @@ fun PdfAiOfflineModelDownload(
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            OfflineLlmModelCatalog.defaultModel.summary,
+            "Descarca pe Wi-Fi inainte de a pierde internetul (${selected?.sizeLabel.orEmpty()}).",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth()
         )
+        Spacer(Modifier.height(10.dp))
+        Column(Modifier.selectableGroup()) {
+            models.forEach { model ->
+                val installed = isModelInstalled(model.id)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .selectable(
+                            selected = model.id == selectedModelId,
+                            onClick = { onSelectModel(model.id) }
+                        )
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(
+                        selected = model.id == selectedModelId,
+                        onClick = null
+                    )
+                    Column(Modifier.weight(1f).padding(start = 4.dp)) {
+                        Text(
+                            "${model.displayName} (${model.sizeLabel})" +
+                                if (installed) " — instalat" else "",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = if (model.id == selectedModelId) FontWeight.SemiBold else FontWeight.Normal
+                        )
+                        Text(
+                            model.summary,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
         Spacer(Modifier.height(8.dp))
         if (isDownloadingModel) {
             Text(
-                "Descarcare… ${maxOf((modelDownloadProgress * 100).toInt(), 2)}%",
+                "Descarcare ${selected?.displayName.orEmpty()}… " +
+                    "${maxOf((modelDownloadProgress * 100).toInt(), 2)}%",
                 style = MaterialTheme.typography.bodySmall,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth()
@@ -342,7 +385,7 @@ fun PdfAiOfflineModelDownload(
             }
         } else if (offlineModelReady) {
             Text(
-                "${OfflineLlmModelCatalog.defaultModel.displayName} instalat.",
+                "${selected?.displayName.orEmpty()} selectat si instalat.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -351,11 +394,13 @@ fun PdfAiOfflineModelDownload(
         } else {
             OutlinedButton(
                 onClick = onDownloadModel,
-                enabled = !isLoading,
+                enabled = !isLoading && selected != null,
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp)
             ) {
-                Text("Descarca ${OfflineLlmModelCatalog.defaultModel.displayName}")
+                Text(
+                    "Descarca ${selected?.displayName.orEmpty()} (${selected?.sizeLabel.orEmpty()})"
+                )
             }
         }
     }

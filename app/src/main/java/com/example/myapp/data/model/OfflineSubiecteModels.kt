@@ -9,8 +9,17 @@ data class PdfPageContent(
     val valid: Boolean
 )
 
-/** O întrebare activă / finalizată pe o pagină validă. */
+/** Fragment de text pregătit pentru o singură inferență offline. */
+data class OfflineQuestionChunk(
+    val id: String,
+    val pageNumber: Int,
+    val text: String,
+    val score: Double
+)
+
+/** O întrebare activă / finalizată pe un chunk valid. */
 data class OfflineQuizItem(
+    val chunkId: String,
     val pageNumber: Int,
     val question: String,
     val expectedAnswer: String,
@@ -35,6 +44,8 @@ data class PageQuestionResult(
 enum class OfflineSubiectePhase {
     Idle,
     LoadingQuestion,
+    /** Generarea pe fragment a eșuat; utilizatorul rămâne pe ecranul de loading. */
+    GenerationFailed,
     Question,
     LoadingEvaluation,
     Feedback,

@@ -28,7 +28,7 @@ object LocalLlmPromptGuard {
 
     fun verifyModelFile(modelPath: String, minBytes: Long): String? {
         val file = File(modelPath)
-        if (!file.isFile) return "Modelul local lipseste. Descarca-l din nou (Qwen2.5 0.5B)."
+        if (!file.isFile) return "Modelul local lipseste. Descarca-l din ecranul Subiecte (pe Wi-Fi)."
         if (file.length() < minBytes) {
             return "Fisierul model pare incomplet (${file.length() / 1_000_000} MB). " +
                 "Sterge si descarca din nou pe Wi-Fi."

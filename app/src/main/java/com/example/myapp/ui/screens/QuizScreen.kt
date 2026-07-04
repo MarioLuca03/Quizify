@@ -1,11 +1,8 @@
 package com.example.myapp.ui.screens
 
-import android.app.Activity
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -29,17 +26,15 @@ import com.example.myapp.ui.components.AnswerOption
 import com.example.myapp.ui.components.tech.PdfFlowLoadingAnimation
 import com.example.myapp.ui.viewmodel.QuizViewModel
 import com.example.myapp.ui.viewmodel.QuizViewModelFactory
-import com.example.myapp.utils.SpeechRecognitionManager
 import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun QuizScreen(
     apiKey: String,
-    subject: String,
+    pdfUri: android.net.Uri,
     numQuestions: Int,
     isExamMode: Boolean = false,
-    pdfUri: android.net.Uri? = null,
     pdfName: String? = null,
     completedQuizzes: List<CompletedQuiz> = emptyList(),
     onQuizCompleted: ((com.example.myapp.data.model.CompletedQuiz) -> Unit)? = null,
@@ -52,9 +47,10 @@ fun QuizScreen(
     val loadingMessages = remember {
         listOf(
             "Citesc PDF-ul…",
+            "Analizez performanța anterioară…",
             "Aleg paginile cele mai relevante…",
             "Pregatesc intrebarile din material…",
-            "Generez quiz-ul…",
+            "Generez quiz-ul adaptiv…",
             "Aproape gata…"
         )
     }
@@ -73,60 +69,7 @@ fun QuizScreen(
     var wildcardAnswer by remember { mutableStateOf("") }
     var wildcardFolderIndex by remember { mutableStateOf(0) }
     var wildcardNewFolder by remember { mutableStateOf("") }
-    
-    val speechRecognitionManager = remember { SpeechRecognitionManager(context) }
-    var listeningQuestionIndex by remember { mutableStateOf<Int?>(null) }
-    
-    fun findMatchingAnswer(spokenText: String, question: QuizQuestion): Int? {
-        val normalizedSpoken = spokenText.lowercase().trim()
-        
-        val letterMap = mapOf(
-            "a" to 0, "ă" to 0,
-            "b" to 1, "be" to 1,
-            "c" to 2, "ce" to 2,
-            "d" to 3, "de" to 3
-        )
-        
-        val firstWord = normalizedSpoken.split(" ").firstOrNull() ?: ""
-        letterMap[firstWord]?.let { return it }
-        
-        question.options.forEachIndexed { index, option ->
-            val normalizedOption = option.lowercase().trim()
-            if (normalizedSpoken.contains(normalizedOption) || 
-                normalizedOption.contains(normalizedSpoken) ||
-                normalizedSpoken == normalizedOption) {
-                return index
-            }
-        }
-        
-        question.options.forEachIndexed { index, option ->
-            val optionWords = option.lowercase().split(" ").take(3).joinToString(" ")
-            if (normalizedSpoken.contains(optionWords) || optionWords.contains(normalizedSpoken)) {
-                return index
-            }
-        }
-        
-        return null
-    }
-    
-    val speechLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            val spokenText = speechRecognitionManager.parseSpeechResult(result.resultCode, result.data)
-            listeningQuestionIndex?.let { questionIndex ->
-                if (spokenText != null && questionIndex < uiState.questions.size) {
-                    val question = uiState.questions[questionIndex]
-                    val matchedAnswerIndex = findMatchingAnswer(spokenText, question)
-                    if (matchedAnswerIndex != null) {
-                        viewModel.selectAnswer(questionIndex, matchedAnswerIndex)
-                    }
-                }
-            }
-        }
-        listeningQuestionIndex = null
-    }
-    
+
     fun isOnlineNow(): Boolean {
         val connectivityManager =
             context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
@@ -138,19 +81,20 @@ fun QuizScreen(
     }
 
     /**
-     * Construiește un rezumat simplu al performanței utilizatorului pentru subiectul curent,
-     * care va fi trimis către modelul LLM în modul „Adaptive learning”.
+     * Rezumat performanță pe același PDF, pentru învățare adaptivă la generare.
      */
     fun buildPreviousPerformanceSummary(): Pair<String, String> {
-        val subjectQuizzes = completedQuizzes
-            .filter { it.subject.contains(subject, ignoreCase = true) }
+        val label = pdfName?.takeIf { it.isNotBlank() } ?: "acest PDF"
+        val pdfQuizzes = completedQuizzes
+            .filter { it.pdfUri?.toString() == pdfUri.toString() }
+            .sortedByDescending { it.completedAt }
             .take(10)
 
-        if (subjectQuizzes.isEmpty()) {
-            return "mediu" to "Utilizator nou pentru subiectul \"$subject\". Presupune nivel mediu și explică conceptele clar." 
+        if (pdfQuizzes.isEmpty()) {
+            return "mediu" to "Utilizator nou pentru \"$label\". Presupune nivel mediu și explică conceptele clar din text."
         }
 
-        val percentages = subjectQuizzes.map { it.percentage }
+        val percentages = pdfQuizzes.map { it.percentage }
         val avg = percentages.average().toInt()
 
         val difficulty = when {
@@ -159,7 +103,7 @@ fun QuizScreen(
             else -> "greu"
         }
 
-        val lastQuiz = subjectQuizzes.first()
+        val lastQuiz = pdfQuizzes.first()
         val wrongQuestions = mutableListOf<String>()
 
         lastQuiz.questions.forEachIndexed { index, question ->
@@ -170,7 +114,7 @@ fun QuizScreen(
         }
 
         val performanceText = buildString {
-            appendLine("Utilizatorul a completat ${subjectQuizzes.size} quiz-uri la subiectul \"$subject\".")
+            appendLine("Utilizatorul a completat ${pdfQuizzes.size} quiz-uri pe \"$label\".")
             appendLine("Acuratețe medie: $avg%.")
             if (percentages.isNotEmpty()) {
                 appendLine("Cel mai bun scor: ${percentages.maxOrNull()}%, cel mai slab: ${percentages.minOrNull()}%.")
@@ -180,7 +124,7 @@ fun QuizScreen(
                 wrongQuestions.take(5).forEach { q ->
                     appendLine("- $q")
                 }
-                appendLine("Te rog să insiști pe aceste concepte cu explicații mai detaliate și exemple simple.")
+                appendLine("Insistă pe aceste concepte dacă apar în fragmentul de pagină; explicații detaliate.")
             } else {
                 appendLine("În ultimul quiz, utilizatorul a răspuns corect la toate întrebările.")
                 appendLine("Poți crește puțin dificultatea și folosi explicații mai scurte.")
@@ -192,60 +136,49 @@ fun QuizScreen(
 
     fun startQuizGeneration() {
         if (uiState.isLoading || uiState.questions.isNotEmpty()) return
-        if (pdfUri != null) {
-            if (isOnlineNow()) {
-                viewModel.generateQuizFromPdf(context, pdfUri, numQuestions)
-            } else {
-                val pool = completedQuizzes
-                    .filter { it.pdfUri?.toString() == pdfUri.toString() && it.questions.isNotEmpty() }
-                    .flatMap { it.questions }
-                    .distinctBy { it.question.trim().lowercase() }
-
-                if (pool.isNotEmpty()) {
-                    val selectedQuestions = mutableListOf<QuizQuestion>()
-                    while (selectedQuestions.size < numQuestions) {
-                        val needed = numQuestions - selectedQuestions.size
-                        selectedQuestions.addAll(pool.shuffled().take(needed))
-                    }
-
-                    viewModel.loadQuestionsFromHistoryPool(
-                        questions = selectedQuestions.take(numQuestions),
-                        subject = "Quiz offline din PDF"
-                    )
-                    scope.launch {
-                        snackbarHostState.showSnackbar(
-                            "Ești offline. Am generat întrebări random din istoricul acestui PDF."
-                        )
-                    }
-                } else {
-                    scope.launch {
-                        snackbarHostState.showSnackbar(
-                            "Ești offline. Nu există quiz-uri în istoric pentru acest PDF."
-                        )
-                    }
-                }
-            }
-        } else {
+        if (isOnlineNow()) {
             val (difficulty, performanceText) = buildPreviousPerformanceSummary()
-            viewModel.generateAdaptiveQuiz(
-                subject = subject,
+            viewModel.generateQuizFromPdf(
+                context = context,
+                pdfUri = pdfUri,
                 numQuestions = numQuestions,
                 difficulty = difficulty,
                 previousPerformance = performanceText
             )
+        } else {
+            val pool = completedQuizzes
+                .filter { it.pdfUri?.toString() == pdfUri.toString() && it.questions.isNotEmpty() }
+                .flatMap { it.questions }
+                .distinctBy { it.question.trim().lowercase() }
+
+            if (pool.isNotEmpty()) {
+                val selectedQuestions = mutableListOf<QuizQuestion>()
+                while (selectedQuestions.size < numQuestions) {
+                    val needed = numQuestions - selectedQuestions.size
+                    selectedQuestions.addAll(pool.shuffled().take(needed))
+                }
+
+                viewModel.loadQuestionsFromHistoryPool(
+                    questions = selectedQuestions.take(numQuestions),
+                    subject = "Quiz offline din PDF"
+                )
+                scope.launch {
+                    snackbarHostState.showSnackbar(
+                        "Ești offline. Am generat întrebări random din istoricul acestui PDF."
+                    )
+                }
+            } else {
+                scope.launch {
+                    snackbarHostState.showSnackbar(
+                        "Ești offline. Nu există quiz-uri în istoric pentru acest PDF."
+                    )
+                }
+            }
         }
     }
 
-    LaunchedEffect(pdfUri, subject, numQuestions) {
+    LaunchedEffect(pdfUri, numQuestions) {
         startQuizGeneration()
-    }
-
-    fun startVoiceInput(questionIndex: Int) {
-        if (speechRecognitionManager.isAvailable()) {
-            listeningQuestionIndex = questionIndex
-            val intent = speechRecognitionManager.createSpeechIntent()
-            speechLauncher.launch(intent)
-        }
     }
 
     LaunchedEffect(isExamMode, uiState.questions, uiState.isFinished) {
@@ -479,12 +412,8 @@ fun QuizScreen(
                                 questionIndex = currentIndex,
                                 question = currentQuestion,
                                 selectedAnswer = uiState.selectedAnswers[currentIndex],
-                                isListening = listeningQuestionIndex == currentIndex,
-                                    onAnswerSelected = { answerIndex ->
-                                        viewModel.selectAnswer(currentIndex, answerIndex)
-                                    },
-                                onVoiceInput = {
-                                    startVoiceInput(currentIndex)
+                                onAnswerSelected = { answerIndex ->
+                                    viewModel.selectAnswer(currentIndex, answerIndex)
                                 },
                                 onAddWildcard = { q, a ->
                                     showWildcardDialog = true
@@ -579,9 +508,7 @@ fun QuizQuestionCard(
     questionIndex: Int,
     question: QuizQuestion,
     selectedAnswer: Int?,
-    isListening: Boolean,
     onAnswerSelected: (Int) -> Unit,
-    onVoiceInput: () -> Unit,
     onAddWildcard: ((String, String) -> Unit)? = null
 ) {
     var xpFlashIndex by remember { mutableStateOf<Int?>(null) }
@@ -614,45 +541,12 @@ fun QuizQuestionCard(
                 fontWeight = FontWeight.Bold
             )
             
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = question.question,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.weight(1f)
-                )
-                
-                Spacer(modifier = Modifier.width(8.dp))
-                
-                IconButton(
-                    onClick = onVoiceInput,
-                    modifier = Modifier.size(48.dp)
-                ) {
-                    Text(
-                        text = "🎤",
-                        style = MaterialTheme.typography.headlineMedium,
-                        color = if (isListening) {
-                            MaterialTheme.colorScheme.error
-                        } else {
-                            MaterialTheme.colorScheme.primary
-                        }
-                    )
-                }
-            }
-            
-            if (isListening) {
-                Text(
-                    text = "🎤 Ascult...",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(vertical = 4.dp)
-                )
-            }
-            
+            Text(
+                text = question.question,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+
             Spacer(modifier = Modifier.height(8.dp))
             
             question.options.forEachIndexed { answerIndex, option ->

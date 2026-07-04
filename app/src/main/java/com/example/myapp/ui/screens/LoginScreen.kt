@@ -64,29 +64,6 @@ fun LoginScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
-                Card(
-                    modifier = Modifier
-                        .size(120.dp)
-                        .padding(bottom = 24.dp),
-                    shape = RoundedCornerShape(24.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer
-                    ),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
-                ) {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "?",
-                            style = MaterialTheme.typography.displayLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                }
-
                 Text(
                     text = "Quizify",
                     style = MaterialTheme.typography.displayMedium,
@@ -214,7 +191,7 @@ fun LoginScreen(
 
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.padding(bottom = 8.dp)
+                    modifier = Modifier.padding(top = 24.dp, bottom = 8.dp)
                 ) {
                     Text(
                         text = "Enter your email and password",

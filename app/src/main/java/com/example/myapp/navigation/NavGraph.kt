@@ -49,10 +49,6 @@ sealed class Screen(val route: String) {
     object ChangePassword : Screen("change_password")
     object DeleteAccount : Screen("delete_account")
     object QuizInput : Screen("quiz_input")
-    object Quiz : Screen("quiz/{subject}/{numQuestions}") {
-        fun createRoute(subject: String, numQuestions: Int) =
-"quiz/${android.net.Uri.encode(subject)}/$numQuestions"
-    }
     object CompletedQuizReview : Screen("completed_quiz_review?quizId={quizId}") {
         fun createRoute(quizId: String) = "completed_quiz_review?quizId=${android.net.Uri.encode(quizId)}"
     }
@@ -315,13 +311,9 @@ fun NavGraph(navController: NavHostController) {
             val pdfItems by viewModel.pdfItems.collectAsState()
             
             QuizInputScreen(
-                apiKey = groqApiKey,
                 pdfItems = pdfItems,
                 onBack = {
                     navController.popBackStack()
-                },
-                onGenerateQuiz = { subject, level, numQuestions ->
-                    navController.navigate(Screen.Quiz.createRoute(subject, numQuestions))
                 },
                 onGenerateQuizFromPdf = { pdfUri, numQuestions, isExamMode ->
                     navController.navigate(
@@ -363,48 +355,10 @@ fun NavGraph(navController: NavHostController) {
 
             QuizScreen(
                 apiKey = groqApiKey,
-                subject = "Quiz din PDF",
+                pdfUri = pdfUri,
                 numQuestions = numQuestions,
                 isExamMode = isExamMode,
-                pdfUri = pdfUri,
                 pdfName = pdfName,
-                completedQuizzes = completedQuizzes,
-                onQuizCompleted = { completedQuiz ->
-                    profileViewModel.addCompletedQuiz(completedQuiz)
-                },
-                onBack = {
-                    navController.popBackStack()
-                }
-            )
-        }
-
-        composable(
-            route = Screen.Quiz.route,
-            arguments = listOf(
-                navArgument("subject") { type = NavType.StringType },
-                navArgument("numQuestions") { type = NavType.IntType }
-            )
-        ) { backStackEntry ->
-            val subject = android.net.Uri.decode(backStackEntry.arguments?.getString("subject") ?: "")
-            val numQuestions = backStackEntry.arguments?.getInt("numQuestions") ?: 15
-
-            val context = LocalContext.current
-            val homeEntry = remember(navController) {
-                navController.getBackStackEntry(Screen.Home.route)
-            }
-            val profileViewModel: ProfileViewModel = viewModel(
-                homeEntry,
-                factory = ProfileViewModelFactory(context.applicationContext as Application)
-            )
-            val completedQuizzes by profileViewModel.completedQuizzes.collectAsState()
-
-            QuizScreen(
-                apiKey = groqApiKey,
-                subject = subject,
-                numQuestions = numQuestions,
-                isExamMode = true,
-                pdfUri = null,
-                pdfName = null,
                 completedQuizzes = completedQuizzes,
                 onQuizCompleted = { completedQuiz ->
                     profileViewModel.addCompletedQuiz(completedQuiz)

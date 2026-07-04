@@ -42,107 +42,14 @@ class QuizViewModel(
     val uiState: StateFlow<QuizUiState> = _uiState.asStateFlow()
     
     private val groqService = GroqService(apiKey)
-    
-    /**
-     * Mod standard de generare quiz (fără adaptive learning explicit).
-     */
-    fun generateQuiz(subject: String, numQuestions: Int) {
-        viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(
-                isLoading = true,
-                error = null,
-                selectedAnswers = emptyMap(),
-                currentQuestionIndex = 0,
-                isFinished = false,
-                score = 0
-            )
-            
-            try {
-                val result = groqService.generateQuiz(subject, numQuestions)
-                
-                result.fold(
-                    onSuccess = { quizResponse ->
-                        _uiState.value = _uiState.value.copy(
-                            questions = quizResponse.questions,
-                            subject = quizResponse.subject ?: subject,
-                            isLoading = false,
-                            error = null
-                        )
-                    },
-                    onFailure = { error ->
-                        _uiState.value = _uiState.value.copy(
-                            isLoading = false,
-                            error = error.message ?: "Eroare la generarea quiz-ului"
-                        )
-                    }
-                )
-            } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(
-                    isLoading = false,
-                    error = e.message ?: "Eroare necunoscută"
-                )
-            }
-        }
-    }
 
-    /**
-     * Mod „Adaptive learning” pentru generarea quiz-ului.
-     *
-     * @param subject Subiectul curent.
-     * @param numQuestions Numărul de întrebări.
-     * @param difficulty Dificultatea estimată pe baza performanței (ex: "ușor", "mediu", "greu").
-     * @param previousPerformance Rezumat text al performanței utilizatorului.
-     */
-    fun generateAdaptiveQuiz(
-        subject: String,
+    fun generateQuizFromPdf(
+        context: Context,
+        pdfUri: Uri,
         numQuestions: Int,
         difficulty: String,
         previousPerformance: String?
     ) {
-        viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(
-                isLoading = true,
-                error = null,
-                selectedAnswers = emptyMap(),
-                currentQuestionIndex = 0,
-                isFinished = false,
-                score = 0
-            )
-
-            try {
-                val result = groqService.generateAdaptiveQuiz(
-                    subject = subject,
-                    numQuestions = numQuestions,
-                    difficulty = difficulty,
-                    previousPerformance = previousPerformance
-                )
-
-                result.fold(
-                    onSuccess = { quizResponse ->
-                        _uiState.value = _uiState.value.copy(
-                            questions = quizResponse.questions,
-                            subject = quizResponse.subject ?: "$subject (Adaptive learning)",
-                            isLoading = false,
-                            error = null
-                        )
-                    },
-                    onFailure = { error ->
-                        _uiState.value = _uiState.value.copy(
-                            isLoading = false,
-                            error = error.message ?: "Eroare la generarea quiz-ului adaptiv"
-                        )
-                    }
-                )
-            } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(
-                    isLoading = false,
-                    error = e.message ?: "Eroare necunoscută în modul adaptiv"
-                )
-            }
-        }
-    }
-    
-    fun generateQuizFromPdf(context: Context, pdfUri: Uri, numQuestions: Int) {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(
                 isLoading = true,
@@ -194,6 +101,7 @@ class QuizViewModel(
                 val quizSubject = "Quiz din PDF"
 
                 val textByPage = perPage.pages.associateBy { it.pageNumber }
+                val adaptivePerformance = previousPerformance?.takeIf { it.isNotBlank() }
 
                 val idealCalls = questionsPerCallDistribution(numQuestions).size
                 val numCalls = minOf(idealCalls, sessionPool.size).coerceAtLeast(1)
@@ -210,7 +118,13 @@ class QuizViewModel(
                         val snippet = PdfPageRelevanceSelector.snippetForQuizPage(
                             textByPage[pageNum]?.normalizedText.orEmpty()
                         )
-                        pageNum to fetchQuestionsForPage(pageNum, snippet, questionsPerCall[index])
+                        pageNum to fetchQuestionsForPage(
+                            pageNum,
+                            snippet,
+                            questionsPerCall[index],
+                            difficulty,
+                            adaptivePerformance
+                        )
                     }
                 }.awaitAll().forEach { (pageNum, questions) ->
                     usedPages.add(pageNum)
@@ -230,7 +144,9 @@ class QuizViewModel(
                         fetchQuestionsForPage(
                             pageNumber = nextPage,
                             pageText = snippet,
-                            count = minOf(needed, QUESTIONS_PER_CALL)
+                            count = minOf(needed, QUESTIONS_PER_CALL),
+                            difficulty = difficulty,
+                            previousPerformance = adaptivePerformance
                         )
                     )
                     topUpRetries++
@@ -241,7 +157,13 @@ class QuizViewModel(
                     val fallbackText = pdfText.trim().take(8_000)
                     if (fallbackText.isNotBlank()) {
                         allQuestions.addAll(
-                            fetchQuestionsForPage(pageNumber = 0, pageText = fallbackText, count = needed)
+                            fetchQuestionsForPage(
+                                pageNumber = 0,
+                                pageText = fallbackText,
+                                count = needed,
+                                difficulty = difficulty,
+                                previousPerformance = adaptivePerformance
+                            )
                         )
                     }
                 }
@@ -296,10 +218,18 @@ class QuizViewModel(
     private suspend fun fetchQuestionsForPage(
         pageNumber: Int,
         pageText: String,
-        count: Int
+        count: Int,
+        difficulty: String,
+        previousPerformance: String?
     ): List<QuizQuestion> {
         if (count <= 0 || pageText.isBlank()) return emptyList()
-        return groqService.generateQuizFromPageText(pageNumber, pageText, count)
+        return groqService.generateQuizFromPageText(
+            pageNumber = pageNumber,
+            pageText = pageText,
+            numQuestions = count,
+            difficulty = difficulty,
+            previousPerformance = previousPerformance
+        )
             .getOrNull()
             ?.questions
             .orEmpty()
